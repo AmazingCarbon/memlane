@@ -17,6 +17,8 @@ import { loadLLMConfig, chat, loadEmbedConfig, embed } from "./llm.js";
 import { VectorIndex, type VectorRecord } from "./vectors.js";
 import fs from "node:fs/promises";
 
+const VERSION = "0.1.0";
+
 function resolveKnowledgeDir(): string {
   const raw = process.env.KNOWLEDGE_DIR;
   if (!raw) {
@@ -115,6 +117,7 @@ Usage:
   memlane                 Start the MCP server over stdio (backward compatible)
   memlane mcp serve       Start the MCP server over stdio
   memlane init [flags]    Initialise a workstream and wire MCP clients
+  memlane --version       Print the Memlane version
 
 Init flags:
   --dir <path>            Knowledge directory (default: knowledge)
@@ -529,7 +532,7 @@ async function main() {
 
   const server = new McpServer({
     name: "memlane",
-    version: "0.1.0",
+    version: VERSION,
   });
 
   // Per-tool telemetry. Wraps every handler via the `register` helper below.
@@ -2018,6 +2021,10 @@ async function runCli() {
   }
   if (cmd === "--help" || cmd === "-h" || cmd === "help") {
     printCliHelp();
+    return;
+  }
+  if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+    process.stdout.write(`${VERSION}\n`);
     return;
   }
   throw new Error(`Unknown command: ${cmd}. Run 'memlane --help'.`);
