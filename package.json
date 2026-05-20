@@ -1,6 +1,6 @@
 {
   "name": "memlane",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Memlane — a second brain for AI agents. MCP server that gives memoryless agents durable, queryable memory across sessions: structured state, knowledge-graph entities as markdown files, and one-call cold-start orientation.",
   "license": "MIT",
   "homepage": "https://github.com/c4rb0nx1/memlane",

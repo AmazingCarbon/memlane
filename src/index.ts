@@ -17,7 +17,7 @@ import { loadLLMConfig, chat, loadEmbedConfig, embed } from "./llm.js";
 import { VectorIndex, type VectorRecord } from "./vectors.js";
 import fs from "node:fs/promises";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 function resolveKnowledgeDir(): string {
   const raw = process.env.KNOWLEDGE_DIR;
@@ -84,6 +84,49 @@ type InitStep = {
   message?: string;
 };
 
+type ByeOptions = {
+  dir: string;
+  yes: boolean;
+  deleteKnowledge: boolean;
+  json: boolean;
+};
+
+type ByeStep = {
+  label: string;
+  path?: string;
+  status:
+    | "would-remove"
+    | "would-update"
+    | "removed"
+    | "updated"
+    | "missing"
+    | "skipped";
+  message?: string;
+};
+
+type DoctorOptions = {
+  dir: string;
+  includeIndex: boolean;
+  json: boolean;
+};
+
+type StatusOptions = {
+  dir: string;
+  json: boolean;
+};
+
+type BackupOptions = {
+  dir: string;
+  out?: string;
+  json: boolean;
+};
+
+type ExportOptions = {
+  dir: string;
+  out?: string;
+  json: boolean;
+};
+
 const MEMLANE_BLOCK_BEGIN = "<!-- MEMLANE:BEGIN -->";
 const MEMLANE_BLOCK_END = "<!-- MEMLANE:END -->";
 
@@ -117,6 +160,11 @@ Usage:
   memlane                 Start the MCP server over stdio (backward compatible)
   memlane mcp serve       Start the MCP server over stdio
   memlane init [flags]    Initialise a workstream and wire MCP clients
+  memlane bye [flags]     Undo Memlane init wiring for this workstream
+  memlane status [flags]  Show local Memlane setup status
+  memlane doctor [flags]  Audit the local Memlane workstream
+  memlane backup [flags]  Copy the knowledge directory to a backup folder
+  memlane export [flags]  Export entities and relations as JSON
   memlane --version       Print the Memlane version
 
 Init flags:
@@ -131,6 +179,18 @@ Init flags:
   --skip-instructions     Do not update AGENTS.md / CLAUDE.md
   --with-ollama           Add local Ollama embedding env to MCP configs
   --json                  Print machine-readable init result
+
+Bye flags:
+  --dir <path>            Knowledge directory (default: knowledge)
+  --yes                   Apply cleanup (default: dry-run)
+  --delete-knowledge      Delete the knowledge directory too (requires --yes)
+  --json                  Print machine-readable bye result
+
+Status/doctor/backup/export flags:
+  --dir <path>            Knowledge directory (default: knowledge)
+  --out <path>            Output path for backup/export
+  --skip-index            Doctor: skip vector index diagnostics
+  --json                  Print machine-readable output
 `);
 }
 
@@ -203,6 +263,167 @@ function parseInitOptions(args: string[]): InitOptions {
   return opts;
 }
 
+function parseByeOptions(args: string[]): ByeOptions {
+  const opts: ByeOptions = {
+    dir: "knowledge",
+    yes: false,
+    deleteKnowledge: false,
+    json: false,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const next = () => {
+      const v = args[++i];
+      if (!v) throw new Error(`${a} requires a value`);
+      return v;
+    };
+    switch (a) {
+      case "--dir":
+        opts.dir = next();
+        break;
+      case "--yes":
+      case "-y":
+        opts.yes = true;
+        break;
+      case "--delete-knowledge":
+        opts.deleteKnowledge = true;
+        break;
+      case "--json":
+        opts.json = true;
+        break;
+      case "-h":
+      case "--help":
+        printCliHelp();
+        process.exit(0);
+      default:
+        throw new Error(`Unknown bye flag: ${a}`);
+    }
+  }
+  return opts;
+}
+
+function parseDoctorOptions(args: string[]): DoctorOptions {
+  const opts: DoctorOptions = {
+    dir: "knowledge",
+    includeIndex: true,
+    json: false,
+  };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const next = () => {
+      const v = args[++i];
+      if (!v) throw new Error(`${a} requires a value`);
+      return v;
+    };
+    switch (a) {
+      case "--dir":
+        opts.dir = next();
+        break;
+      case "--skip-index":
+        opts.includeIndex = false;
+        break;
+      case "--json":
+        opts.json = true;
+        break;
+      case "-h":
+      case "--help":
+        printCliHelp();
+        process.exit(0);
+      default:
+        throw new Error(`Unknown doctor flag: ${a}`);
+    }
+  }
+  return opts;
+}
+
+function parseStatusOptions(args: string[]): StatusOptions {
+  const opts: StatusOptions = { dir: "knowledge", json: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const next = () => {
+      const v = args[++i];
+      if (!v) throw new Error(`${a} requires a value`);
+      return v;
+    };
+    switch (a) {
+      case "--dir":
+        opts.dir = next();
+        break;
+      case "--json":
+        opts.json = true;
+        break;
+      case "-h":
+      case "--help":
+        printCliHelp();
+        process.exit(0);
+      default:
+        throw new Error(`Unknown status flag: ${a}`);
+    }
+  }
+  return opts;
+}
+
+function parseBackupOptions(args: string[]): BackupOptions {
+  const opts: BackupOptions = { dir: "knowledge", json: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const next = () => {
+      const v = args[++i];
+      if (!v) throw new Error(`${a} requires a value`);
+      return v;
+    };
+    switch (a) {
+      case "--dir":
+        opts.dir = next();
+        break;
+      case "--out":
+        opts.out = next();
+        break;
+      case "--json":
+        opts.json = true;
+        break;
+      case "-h":
+      case "--help":
+        printCliHelp();
+        process.exit(0);
+      default:
+        throw new Error(`Unknown backup flag: ${a}`);
+    }
+  }
+  return opts;
+}
+
+function parseExportOptions(args: string[]): ExportOptions {
+  const opts: ExportOptions = { dir: "knowledge", json: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const next = () => {
+      const v = args[++i];
+      if (!v) throw new Error(`${a} requires a value`);
+      return v;
+    };
+    switch (a) {
+      case "--dir":
+        opts.dir = next();
+        break;
+      case "--out":
+        opts.out = next();
+        break;
+      case "--json":
+        opts.json = true;
+        break;
+      case "-h":
+      case "--help":
+        printCliHelp();
+        process.exit(0);
+      default:
+        throw new Error(`Unknown export flag: ${a}`);
+    }
+  }
+  return opts;
+}
+
 function shouldRunWriter(opts: InitOptions, name: string): boolean {
   if (opts.only && !opts.only.has(name)) return false;
   return !opts.skip.has(name);
@@ -249,6 +470,161 @@ async function writeJsonFile(filePath: string, data: unknown): Promise<InitStep[
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, next);
   return prior === null ? "created" : "updated";
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isEmptyObject(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length === 0;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCliKnowledgeDir(dir: string): string {
+  return path.isAbsolute(dir) ? dir : path.resolve(process.cwd(), dir);
+}
+
+function safeTimestamp(d = new Date()): string {
+  return d.toISOString().replace(/[:.]/g, "-");
+}
+
+async function fileContains(filePath: string, needle: string): Promise<boolean> {
+  try {
+    return (await fs.readFile(filePath, "utf8")).includes(needle);
+  } catch {
+    return false;
+  }
+}
+
+async function removeEmptyParent(dir: string, stopAt: string): Promise<void> {
+  const resolvedDir = path.resolve(dir);
+  const resolvedStop = path.resolve(stopAt);
+  if (resolvedDir === resolvedStop || !resolvedDir.startsWith(`${resolvedStop}${path.sep}`)) {
+    return;
+  }
+  try {
+    await fs.rmdir(resolvedDir);
+  } catch {
+    return;
+  }
+  await removeEmptyParent(path.dirname(resolvedDir), resolvedStop);
+}
+
+async function cleanupJsonFile(
+  label: string,
+  filePath: string,
+  apply: boolean,
+  edit: (data: Record<string, any>) => boolean
+): Promise<ByeStep> {
+  if (!(await pathExists(filePath))) {
+    return { label, path: filePath, status: "missing" };
+  }
+  const data = await readJsonFile(filePath);
+  const changed = edit(data);
+  if (!changed) {
+    return {
+      label,
+      path: filePath,
+      status: "skipped",
+      message: "No Memlane entry found.",
+    };
+  }
+  if (isEmptyObject(data)) {
+    if (apply) {
+      await fs.rm(filePath, { force: true });
+      await removeEmptyParent(path.dirname(filePath), process.cwd());
+    }
+    return {
+      label,
+      path: filePath,
+      status: apply ? "removed" : "would-remove",
+    };
+  }
+  if (apply) {
+    await writeJsonFile(filePath, data);
+  }
+  return {
+    label,
+    path: filePath,
+    status: apply ? "updated" : "would-update",
+  };
+}
+
+async function cleanupMcpJson(filePath: string, apply: boolean): Promise<ByeStep> {
+  return cleanupJsonFile("MCP config", filePath, apply, (data) => {
+    if (!isPlainObject(data.mcpServers) || !("memlane" in data.mcpServers)) {
+      return false;
+    }
+    delete data.mcpServers.memlane;
+    if (isEmptyObject(data.mcpServers)) delete data.mcpServers;
+    return true;
+  });
+}
+
+async function cleanupOpenCodeConfig(apply: boolean): Promise<ByeStep> {
+  return cleanupJsonFile(
+    "OpenCode MCP",
+    path.resolve(process.cwd(), "opencode.jsonc"),
+    apply,
+    (data) => {
+      if (!isPlainObject(data.mcp) || !("memlane" in data.mcp)) return false;
+      delete data.mcp.memlane;
+      if (isEmptyObject(data.mcp)) delete data.mcp;
+      if (
+        Object.keys(data).length === 1 &&
+        data.$schema === "https://opencode.ai/config.json"
+      ) {
+        delete data.$schema;
+      }
+      return true;
+    }
+  );
+}
+
+async function cleanupCodexConfig(apply: boolean): Promise<ByeStep> {
+  const filePath = path.join(os.homedir(), ".codex", "config.toml");
+  let prior = "";
+  try {
+    prior = await fs.readFile(filePath, "utf8");
+  } catch {
+    return { label: "Codex MCP", path: filePath, status: "missing" };
+  }
+  const re = /(?:^|\n)\[mcp_servers\.memlane\]\n(?:[^\n]*(?:\n|$))*?(?=\n\[|\s*$)/m;
+  if (!re.test(prior)) {
+    return {
+      label: "Codex MCP",
+      path: filePath,
+      status: "skipped",
+      message: "No Memlane section found.",
+    };
+  }
+  const next = prior.replace(re, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!next) {
+    if (apply) {
+      await fs.rm(filePath, { force: true });
+      await removeEmptyParent(path.dirname(filePath), os.homedir());
+    }
+    return {
+      label: "Codex MCP",
+      path: filePath,
+      status: apply ? "removed" : "would-remove",
+    };
+  }
+  if (apply) await fs.writeFile(filePath, `${next}\n`);
+  return {
+    label: "Codex MCP",
+    path: filePath,
+    status: apply ? "updated" : "would-update",
+  };
 }
 
 async function upsertMcpJson(
@@ -391,6 +767,42 @@ async function upsertInstructionBlock(filePath: string, block: string): Promise<
   };
 }
 
+async function cleanupInstructionBlock(filePath: string, apply: boolean): Promise<ByeStep> {
+  let prior = "";
+  try {
+    prior = await fs.readFile(filePath, "utf8");
+  } catch {
+    return { label: "Agent instructions", path: filePath, status: "missing" };
+  }
+  const re = new RegExp(
+    `${MEMLANE_BLOCK_BEGIN}[\\s\\S]*?${MEMLANE_BLOCK_END}`,
+    "m"
+  );
+  if (!re.test(prior)) {
+    return {
+      label: "Agent instructions",
+      path: filePath,
+      status: "skipped",
+      message: "No managed Memlane block found.",
+    };
+  }
+  const next = prior.replace(re, "").replace(/\n{3,}/g, "\n\n").trim();
+  if (!next) {
+    if (apply) await fs.rm(filePath, { force: true });
+    return {
+      label: "Agent instructions",
+      path: filePath,
+      status: apply ? "removed" : "would-remove",
+    };
+  }
+  if (apply) await fs.writeFile(filePath, `${next}\n`);
+  return {
+    label: "Agent instructions",
+    path: filePath,
+    status: apply ? "updated" : "would-update",
+  };
+}
+
 async function updateInstructionFiles(opts: InitOptions): Promise<InitStep[]> {
   const root = process.cwd();
   let files = await findInstructionFiles(root);
@@ -403,6 +815,472 @@ async function updateInstructionFiles(opts: InitOptions): Promise<InitStep[]> {
     steps.push(await upsertInstructionBlock(file, block));
   }
   return steps;
+}
+
+async function listFilesRecursive(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (dir: string) => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.isFile()) out.push(full);
+    }
+  };
+  await walk(root);
+  return out.sort();
+}
+
+async function isInitOnlyKnowledgeDir(knowledgeDir: string): Promise<{
+  ok: boolean;
+  reason?: string;
+}> {
+  const files = (await listFilesRecursive(knowledgeDir)).map((f) =>
+    path.relative(knowledgeDir, f)
+  );
+  const allowed = new Set([
+    "_index.json",
+    path.join("states", "current-state.md"),
+  ]);
+  const markdownFiles = files.filter((f) => f.endsWith(".md"));
+  const rootMarkdown = markdownFiles.filter((f) => !f.includes(path.sep));
+  if (rootMarkdown.length === 1) allowed.add(rootMarkdown[0]);
+
+  const unexpected = files.filter((f) => !allowed.has(f));
+  if (unexpected.length) {
+    return {
+      ok: false,
+      reason: `Knowledge directory contains ${unexpected.length} non-starter file(s).`,
+    };
+  }
+  if (!files.includes("_index.json")) {
+    return { ok: false, reason: "Missing starter _index.json." };
+  }
+  if (!files.includes(path.join("states", "current-state.md"))) {
+    return { ok: false, reason: "Missing starter current-state file." };
+  }
+  if (rootMarkdown.length !== 1) {
+    return { ok: false, reason: "Expected exactly one root workstream file." };
+  }
+
+  try {
+    const index = JSON.parse(
+      await fs.readFile(path.join(knowledgeDir, "_index.json"), "utf8")
+    ) as { relations?: unknown };
+    if (Array.isArray(index.relations) && index.relations.length > 0) {
+      return { ok: false, reason: "Relation index is not empty." };
+    }
+    const workstream = await fs.readFile(
+      path.join(knowledgeDir, rootMarkdown[0]),
+      "utf8"
+    );
+    const state = await fs.readFile(
+      path.join(knowledgeDir, "states", "current-state.md"),
+      "utf8"
+    );
+    if (!workstream.includes("Created by `memlane init`.")) {
+      return { ok: false, reason: "Workstream file is not the init scaffold." };
+    }
+    if (
+      !state.includes("Phase: initialized") ||
+      !state.includes("Workstream initialized by memlane init")
+    ) {
+      return { ok: false, reason: "State file is not the init scaffold." };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Could not verify starter knowledge files: ${(err as Error).message}`,
+    };
+  }
+  return { ok: true };
+}
+
+async function cleanupKnowledgeDir(
+  knowledgeDir: string,
+  apply: boolean,
+  deleteKnowledge: boolean
+): Promise<ByeStep> {
+  if (!(await pathExists(knowledgeDir))) {
+    return { label: "Knowledge directory", path: knowledgeDir, status: "missing" };
+  }
+  if (deleteKnowledge) {
+    if (path.resolve(knowledgeDir) === path.parse(path.resolve(knowledgeDir)).root) {
+      return {
+        label: "Knowledge directory",
+        path: knowledgeDir,
+        status: "skipped",
+        message: "Refusing to delete filesystem root.",
+      };
+    }
+    if (apply) await fs.rm(knowledgeDir, { recursive: true, force: true });
+    return {
+      label: "Knowledge directory",
+      path: knowledgeDir,
+      status: apply ? "removed" : "would-remove",
+      message: "delete-knowledge requested.",
+    };
+  }
+
+  const starter = await isInitOnlyKnowledgeDir(knowledgeDir);
+  if (!starter.ok) {
+    return {
+      label: "Knowledge directory",
+      path: knowledgeDir,
+      status: "skipped",
+      message: `${starter.reason} Use --delete-knowledge to remove it.`,
+    };
+  }
+  if (apply) await fs.rm(knowledgeDir, { recursive: true, force: true });
+  return {
+    label: "Knowledge directory",
+    path: knowledgeDir,
+    status: apply ? "removed" : "would-remove",
+    message: "Only init scaffold detected.",
+  };
+}
+
+async function computeDoctorReport(root: string, includeIndex: boolean): Promise<Record<string, unknown>> {
+  const store = new KnowledgeStore(root);
+  const vectorIndex = new VectorIndex(path.join(root, "_vectors.json"));
+  const errors: DoctorFinding[] = [];
+  const warnings: DoctorFinding[] = [];
+  const suggestions: string[] = [];
+  const addError = (finding: DoctorFinding) => errors.push(finding);
+  const addWarning = (finding: DoctorFinding) => warnings.push(finding);
+  const suggest = (s: string) => {
+    if (!suggestions.includes(s)) suggestions.push(s);
+  };
+
+  const knowledgeDir = { path: root, exists: true, writable: true };
+  try {
+    await fs.access(root, fs.constants.F_OK);
+  } catch {
+    knowledgeDir.exists = false;
+    knowledgeDir.writable = false;
+    addError({
+      code: "knowledge_dir_missing",
+      message: `KNOWLEDGE_DIR does not exist: ${root}`,
+    });
+    suggest("Run `memlane init` from the workstream root.");
+  }
+  if (knowledgeDir.exists) {
+    try {
+      await fs.access(root, fs.constants.W_OK);
+    } catch {
+      knowledgeDir.writable = false;
+      addError({
+        code: "knowledge_dir_not_writable",
+        message: `KNOWLEDGE_DIR is not writable: ${root}`,
+      });
+      suggest("Fix filesystem permissions before relying on Memlane writes.");
+    }
+  }
+
+  const markdownFiles = await listMarkdownFiles(root);
+  const invalidMarkdown: Array<{ filePath: string; reason: string }> = [];
+  const entities: StoredEntity[] = [];
+  for (const file of markdownFiles) {
+    try {
+      const entity = await store.readEntityFromFile(file);
+      if (!entity) {
+        invalidMarkdown.push({
+          filePath: path.relative(root, file),
+          reason: "Missing required frontmatter fields `name` and/or `type`.",
+        });
+      } else {
+        entities.push(entity);
+      }
+    } catch (err) {
+      invalidMarkdown.push({
+        filePath: path.relative(root, file),
+        reason: (err as Error).message,
+      });
+    }
+  }
+  if (invalidMarkdown.length) {
+    addError({
+      code: "invalid_markdown_entities",
+      message: `${invalidMarkdown.length} markdown file(s) could not be parsed as Memlane entities.`,
+      details: invalidMarkdown,
+    });
+    suggest("Add valid frontmatter (`name`, `type`) or move non-entity markdown outside KNOWLEDGE_DIR.");
+  }
+
+  const byName = new Map<string, StoredEntity[]>();
+  for (const e of entities) {
+    const list = byName.get(e.name) ?? [];
+    list.push(e);
+    byName.set(e.name, list);
+  }
+  const duplicateNames = [...byName.entries()]
+    .filter(([, list]) => list.length > 1)
+    .map(([name, list]) => ({
+      name,
+      filePaths: list.map((e) => path.relative(root, e.filePath)),
+    }));
+  if (duplicateNames.length) {
+    addError({
+      code: "duplicate_entity_names",
+      message: `${duplicateNames.length} duplicate entity name(s) found.`,
+      details: duplicateNames,
+    });
+    suggest("Rename or delete duplicate entities so each name is canonical.");
+  }
+
+  const workstreams = entities.filter((e) => e.entityType === "workstream");
+  if (workstreams.length !== 1) {
+    addError({
+      code: "workstream_entity_count",
+      message:
+        workstreams.length === 0
+          ? "No workstream entity found."
+          : `Expected 1 workstream entity, found ${workstreams.length}.`,
+      details: workstreams.map((e) => ({
+        name: e.name,
+        filePath: path.relative(root, e.filePath),
+      })),
+    });
+    suggest("Create exactly one root workstream entity so list_workstreams can discover this workstream.");
+  }
+
+  const stateEntities = entities.filter((e) => e.entityType === "state");
+  let missingStateFields: string[] = [];
+  if (stateEntities.length !== 1) {
+    addError({
+      code: "state_entity_count",
+      message:
+        stateEntities.length === 0
+          ? "No state entity found."
+          : `Expected 1 state entity, found ${stateEntities.length}.`,
+      details: stateEntities.map((e) => ({
+        name: e.name,
+        filePath: path.relative(root, e.filePath),
+      })),
+    });
+    suggest(
+      stateEntities.length > 1
+        ? "Use consolidate_state to merge duplicate state entities."
+        : "Run `memlane init` or use set_state to create current-state."
+    );
+  } else {
+    const state = stateEntities[0];
+    const requiredStateKeys = [
+      "phase",
+      "nextAction",
+      "rollbackUnit",
+      "validationSignal",
+    ];
+    missingStateFields = requiredStateKeys.filter((key) => {
+      const field = STATE_FIELDS.find((f) => f.key === key);
+      return !field || !state.observations.some((o) => o.startsWith(`${field.label}: `));
+    });
+    if (missingStateFields.length) {
+      addWarning({
+        code: "missing_state_fields",
+        message: `State entity is missing ${missingStateFields.length} important field(s).`,
+        details: { state: state.name, missing: missingStateFields },
+      });
+      suggest("Use set_state to fill phase, nextAction, rollbackUnit, and validationSignal before handoff.");
+    }
+  }
+
+  const relationDiagnostics: {
+    indexPath: string;
+    parseable: boolean;
+    total: number;
+    malformed: unknown[];
+    dangling: Relation[];
+    nonCanonical: Relation[];
+    duplicates: Relation[];
+  } = {
+    indexPath: path.relative(root, path.join(root, "_index.json")),
+    parseable: true,
+    total: 0,
+    malformed: [],
+    dangling: [],
+    nonCanonical: [],
+    duplicates: [],
+  };
+  let relations: Relation[] = [];
+  try {
+    const raw = await fs.readFile(path.join(root, "_index.json"), "utf8");
+    const parsed = JSON.parse(raw) as { relations?: unknown };
+    if (!Array.isArray(parsed.relations)) {
+      relationDiagnostics.parseable = false;
+      addError({
+        code: "index_missing_relations",
+        message: "_index.json is missing the `relations` array.",
+      });
+      suggest("Rewrite _index.json with shape `{ \"version\": 1, \"relations\": [] }` or restore it from git.");
+    } else {
+      const seen = new Set<string>();
+      const entityNames = new Set(entities.map((e) => e.name));
+      const allowed = new Set(DEFAULT_RELATION_VOCABULARY);
+      for (const rawRel of parsed.relations) {
+        const r = rawRel as Partial<Relation>;
+        if (
+          typeof r.from !== "string" ||
+          typeof r.to !== "string" ||
+          typeof r.relationType !== "string"
+        ) {
+          relationDiagnostics.malformed.push(rawRel);
+          continue;
+        }
+        const rel: Relation = {
+          from: r.from,
+          to: r.to,
+          relationType: r.relationType,
+        };
+        relations.push(rel);
+        const key = `${rel.from}\u0000${rel.to}\u0000${rel.relationType}`;
+        if (seen.has(key)) relationDiagnostics.duplicates.push(rel);
+        else seen.add(key);
+        if (!entityNames.has(rel.from) || !entityNames.has(rel.to)) {
+          relationDiagnostics.dangling.push(rel);
+        }
+        if (!allowed.has(rel.relationType)) {
+          relationDiagnostics.nonCanonical.push(rel);
+        }
+      }
+    }
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    relationDiagnostics.parseable = false;
+    addError({
+      code: "index_unreadable",
+      message:
+        e.code === "ENOENT"
+          ? "_index.json is missing."
+          : `_index.json unreadable or invalid JSON: ${e.message}`,
+    });
+    suggest("Restore or recreate _index.json before relying on relation graph traversal.");
+  }
+  relationDiagnostics.total = relations.length;
+  if (relationDiagnostics.malformed.length) {
+    addError({
+      code: "malformed_relations",
+      message: `${relationDiagnostics.malformed.length} relation(s) are malformed.`,
+      details: relationDiagnostics.malformed.slice(0, 10),
+    });
+  }
+  if (relationDiagnostics.dangling.length) {
+    addError({
+      code: "dangling_relations",
+      message: `${relationDiagnostics.dangling.length} relation(s) reference missing entities.`,
+      details: relationDiagnostics.dangling.slice(0, 10),
+    });
+    suggest("Delete dangling relations or recreate the missing endpoint entities.");
+  }
+  if (relationDiagnostics.nonCanonical.length) {
+    addError({
+      code: "non_canonical_relations",
+      message: `${relationDiagnostics.nonCanonical.length} relation(s) use non-canonical relation types.`,
+      details: relationDiagnostics.nonCanonical.slice(0, 10),
+    });
+    suggest("Run check_vocabulary and replace drift verbs with canonical relation types.");
+  }
+  if (relationDiagnostics.duplicates.length) {
+    addWarning({
+      code: "duplicate_relations",
+      message: `${relationDiagnostics.duplicates.length} duplicate relation(s) found.`,
+      details: relationDiagnostics.duplicates.slice(0, 10),
+    });
+  }
+
+  const vectorDiagnostics: Record<string, unknown> = { checked: includeIndex };
+  if (includeIndex) {
+    const status = await vectorIndex.status();
+    const cfg = loadEmbedConfig();
+    const expectedVectors =
+      entities.length +
+      entities.reduce(
+        (sum, e) => sum + e.observations.filter((o) => o.trim()).length,
+        0
+      );
+    Object.assign(vectorDiagnostics, {
+      ...status,
+      filePath: path.relative(root, status.filePath),
+      expectedVectors,
+      currentEmbedderConfigured: !("error" in cfg),
+      currentModel: "error" in cfg ? null : cfg.model,
+      modelMismatch:
+        status.exists && !("error" in cfg) && status.model !== cfg.model,
+      countMatches: !status.exists ? null : status.totalVectors === expectedVectors,
+    });
+    if (!status.exists) {
+      addWarning({
+        code: "vector_index_missing",
+        message: "Vector index does not exist; semantic_search will fail until rebuild_index runs.",
+      });
+      suggest("Run rebuild_index after configuring MEMLANE_EMBED_* if semantic_search matters.");
+    } else if ("error" in cfg) {
+      addWarning({
+        code: "embedder_not_configured",
+        message: "Vector index exists, but current MEMLANE_EMBED_* / MEMLANE_LLM_* env is not configured.",
+      });
+    } else if (status.model !== cfg.model) {
+      addError({
+        code: "vector_model_mismatch",
+        message: `Vector index was built with '${status.model}' but current embedder model is '${cfg.model}'.`,
+      });
+      suggest("Run rebuild_index with the current embedder model before semantic_search.");
+    }
+    if (status.exists && status.totalVectors !== expectedVectors) {
+      addWarning({
+        code: "vector_count_mismatch",
+        message: `Vector index has ${status.totalVectors} vectors but current entities/observations imply ${expectedVectors}.`,
+      });
+      suggest("Run rebuild_index to refresh semantic_search after recent writes.");
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    summary: {
+      errors: errors.length,
+      warnings: warnings.length,
+      entities: entities.length,
+      markdownFiles: markdownFiles.length,
+      relations: relationDiagnostics.total,
+    },
+    errors,
+    warnings,
+    suggestions,
+    checks: {
+      knowledgeDir,
+      markdown: {
+        ok: invalidMarkdown.length === 0,
+        filesScanned: markdownFiles.length,
+        invalidFiles: invalidMarkdown,
+      },
+      workstream: {
+        ok: workstreams.length === 1,
+        count: workstreams.length,
+        names: workstreams.map((e) => e.name),
+      },
+      state: {
+        ok: stateEntities.length === 1 && missingStateFields.length === 0,
+        count: stateEntities.length,
+        names: stateEntities.map((e) => e.name),
+        missingFields: missingStateFields,
+      },
+      relations: {
+        ok:
+          relationDiagnostics.parseable &&
+          relationDiagnostics.malformed.length === 0 &&
+          relationDiagnostics.dangling.length === 0 &&
+          relationDiagnostics.nonCanonical.length === 0,
+        ...relationDiagnostics,
+      },
+      vectorIndex: vectorDiagnostics,
+    },
+  };
 }
 
 async function runInit(args: string[]): Promise<void> {
@@ -522,6 +1400,309 @@ async function runInit(args: string[]): Promise<void> {
   }
   process.stdout.write("\nNext steps:\n");
   for (const s of result.nextSteps) process.stdout.write(`  ${s}\n`);
+}
+
+async function runBye(args: string[]): Promise<void> {
+  const opts = parseByeOptions(args);
+  if (opts.deleteKnowledge && !opts.yes) {
+    throw new Error("--delete-knowledge requires --yes");
+  }
+  const apply = opts.yes;
+  const steps: ByeStep[] = [];
+  const knowledgeDir = path.isAbsolute(opts.dir)
+    ? opts.dir
+    : path.resolve(process.cwd(), opts.dir);
+
+  steps.push(await cleanupMcpJson(path.resolve(process.cwd(), ".mcp.json"), apply));
+  steps.push(
+    await cleanupMcpJson(path.resolve(process.cwd(), ".cursor", "mcp.json"), apply)
+  );
+  steps.push(await cleanupCodexConfig(apply));
+  steps.push(await cleanupOpenCodeConfig(apply));
+
+  const instructionFiles = await findInstructionFiles(process.cwd());
+  for (const file of instructionFiles) {
+    steps.push(await cleanupInstructionBlock(file, apply));
+  }
+  if (instructionFiles.length === 0) {
+    steps.push({
+      label: "Agent instructions",
+      status: "missing",
+      message: "No AGENTS.md or CLAUDE.md files found.",
+    });
+  }
+
+  steps.push(await cleanupKnowledgeDir(knowledgeDir, apply, opts.deleteKnowledge));
+
+  const changed = steps.filter((s) =>
+    ["would-remove", "would-update", "removed", "updated"].includes(s.status)
+  );
+  const result = {
+    ok: true,
+    applied: apply,
+    knowledgeDir,
+    steps,
+    nextSteps: apply
+      ? [
+          "Restart your agent/MCP client so it drops any old Memlane server process.",
+          "After verifying no workstream still uses Memlane, uninstall with your package manager if desired.",
+        ]
+      : [
+          "This was a dry run. Re-run with `memlane bye --yes` to apply safe cleanup.",
+          "Add `--delete-knowledge` only if you want to delete the knowledge directory too.",
+        ],
+  };
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    return;
+  }
+
+  process.stdout.write(
+    `${apply ? "Cleaned up" : "Dry run: would clean up"} Memlane init artifacts\n\n`
+  );
+  for (const s of steps) {
+    const mark =
+      s.status === "missing" || s.status === "skipped"
+        ? "·"
+        : s.status.startsWith("would-")
+          ? "?"
+          : "✓";
+    const p = s.path ? `  ${path.relative(process.cwd(), s.path) || s.path}` : "";
+    const msg = s.message ? ` — ${s.message}` : "";
+    process.stdout.write(`  ${mark} ${s.label}${p} (${s.status})${msg}\n`);
+  }
+  process.stdout.write(`\n${changed.length} change(s) ${apply ? "applied" : "planned"}.\n`);
+  process.stdout.write("\nNext steps:\n");
+  for (const s of result.nextSteps) process.stdout.write(`  ${s}\n`);
+}
+
+async function runDoctorCli(args: string[]): Promise<void> {
+  const opts = parseDoctorOptions(args);
+  const knowledgeDir = resolveCliKnowledgeDir(opts.dir);
+  const report = await computeDoctorReport(knowledgeDir, opts.includeIndex);
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
+  const summary = report.summary as {
+    errors: number;
+    warnings: number;
+    entities: number;
+    markdownFiles: number;
+    relations: number;
+  };
+  process.stdout.write(`${report.ok ? "Memlane doctor ok" : "Memlane doctor found issues"}\n\n`);
+  process.stdout.write(`Knowledge dir: ${knowledgeDir}\n`);
+  process.stdout.write(
+    `Entities: ${summary.entities}, markdown files: ${summary.markdownFiles}, relations: ${summary.relations}\n`
+  );
+  process.stdout.write(`Errors: ${summary.errors}, warnings: ${summary.warnings}\n`);
+  const errors = report.errors as DoctorFinding[];
+  const warnings = report.warnings as DoctorFinding[];
+  if (errors.length) {
+    process.stdout.write("\nErrors:\n");
+    for (const e of errors) process.stdout.write(`  - ${e.code}: ${e.message}\n`);
+  }
+  if (warnings.length) {
+    process.stdout.write("\nWarnings:\n");
+    for (const w of warnings) process.stdout.write(`  - ${w.code}: ${w.message}\n`);
+  }
+  const suggestions = report.suggestions as string[];
+  if (suggestions.length) {
+    process.stdout.write("\nSuggestions:\n");
+    for (const s of suggestions) process.stdout.write(`  - ${s}\n`);
+  }
+}
+
+async function computeStatusReport(root: string): Promise<Record<string, unknown>> {
+  const store = new KnowledgeStore(root);
+  const knowledgeExists = await pathExists(root);
+  let knowledgeWritable = false;
+  if (knowledgeExists) {
+    try {
+      await fs.access(root, fs.constants.W_OK);
+      knowledgeWritable = true;
+    } catch {
+      knowledgeWritable = false;
+    }
+  }
+  const entities = knowledgeExists ? await store.listAllEntities() : [];
+  const relations = knowledgeExists ? await store.readRelations() : [];
+  const stateEntities = entities.filter((e) => e.entityType === "state");
+  const workstreams = entities.filter((e) => e.entityType === "workstream");
+  const instructionFiles = await findInstructionFiles(process.cwd());
+  const instructionBlocks = [];
+  for (const file of instructionFiles) {
+    instructionBlocks.push({
+      path: file,
+      hasMemlaneBlock: await fileContains(file, MEMLANE_BLOCK_BEGIN),
+    });
+  }
+  const mcpJson = path.resolve(process.cwd(), ".mcp.json");
+  const cursorJson = path.resolve(process.cwd(), ".cursor", "mcp.json");
+  const opencodeJson = path.resolve(process.cwd(), "opencode.jsonc");
+  const codexToml = path.join(os.homedir(), ".codex", "config.toml");
+  const projectMcp = await readJsonFile(mcpJson);
+  const cursorMcp = await readJsonFile(cursorJson);
+  const opencode = await readJsonFile(opencodeJson);
+  const doctor = await computeDoctorReport(root, false);
+  return {
+    ok: Boolean(doctor.ok),
+    version: VERSION,
+    cwd: process.cwd(),
+    knowledgeDir: {
+      path: root,
+      exists: knowledgeExists,
+      writable: knowledgeWritable,
+    },
+    graph: {
+      entities: entities.length,
+      relations: relations.length,
+      workstreams: workstreams.map((e) => e.name),
+      states: stateEntities.map((e) => e.name),
+    },
+    configs: {
+      claude: {
+        path: mcpJson,
+        exists: await pathExists(mcpJson),
+        hasMemlane: isPlainObject(projectMcp.mcpServers) && "memlane" in projectMcp.mcpServers,
+      },
+      cursor: {
+        path: cursorJson,
+        exists: await pathExists(cursorJson),
+        hasMemlane: isPlainObject(cursorMcp.mcpServers) && "memlane" in cursorMcp.mcpServers,
+      },
+      codex: {
+        path: codexToml,
+        exists: await pathExists(codexToml),
+        hasMemlane: await fileContains(codexToml, "[mcp_servers.memlane]"),
+      },
+      opencode: {
+        path: opencodeJson,
+        exists: await pathExists(opencodeJson),
+        hasMemlane: isPlainObject(opencode.mcp) && "memlane" in opencode.mcp,
+      },
+      instructions: instructionBlocks,
+    },
+    doctor: {
+      ok: doctor.ok,
+      summary: doctor.summary,
+    },
+  };
+}
+
+async function runStatus(args: string[]): Promise<void> {
+  const opts = parseStatusOptions(args);
+  const knowledgeDir = resolveCliKnowledgeDir(opts.dir);
+  const status = await computeStatusReport(knowledgeDir);
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(status, null, 2) + "\n");
+    return;
+  }
+  const knowledge = status.knowledgeDir as {
+    path: string;
+    exists: boolean;
+    writable: boolean;
+  };
+  const graph = status.graph as {
+    entities: number;
+    relations: number;
+    workstreams: string[];
+    states: string[];
+  };
+  const doctor = status.doctor as { ok: boolean; summary: unknown };
+  process.stdout.write(`${status.ok ? "Memlane status ok" : "Memlane status needs attention"}\n\n`);
+  process.stdout.write(`Version: ${status.version}\n`);
+  process.stdout.write(`Knowledge dir: ${knowledge.path}\n`);
+  process.stdout.write(`Knowledge exists: ${knowledge.exists ? "yes" : "no"}\n`);
+  process.stdout.write(`Knowledge writable: ${knowledge.writable ? "yes" : "no"}\n`);
+  process.stdout.write(`Entities: ${graph.entities}, relations: ${graph.relations}\n`);
+  process.stdout.write(`Workstream: ${graph.workstreams.join(", ") || "missing"}\n`);
+  process.stdout.write(`State: ${graph.states.join(", ") || "missing"}\n`);
+  process.stdout.write(`Doctor: ${doctor.ok ? "ok" : "issues found"}\n`);
+}
+
+async function runBackup(args: string[]): Promise<void> {
+  const opts = parseBackupOptions(args);
+  const knowledgeDir = resolveCliKnowledgeDir(opts.dir);
+  if (!(await pathExists(knowledgeDir))) {
+    throw new Error(`Knowledge directory does not exist: ${knowledgeDir}`);
+  }
+  const out = opts.out
+    ? path.resolve(process.cwd(), opts.out)
+    : path.resolve(
+        process.cwd(),
+        "memlane-backups",
+        `${path.basename(knowledgeDir)}-${safeTimestamp()}`
+      );
+  const resolvedKnowledge = path.resolve(knowledgeDir);
+  if (out === resolvedKnowledge || out.startsWith(`${resolvedKnowledge}${path.sep}`)) {
+    throw new Error("Backup output must not be inside the knowledge directory.");
+  }
+  if (await pathExists(out)) {
+    throw new Error(`Backup output already exists: ${out}`);
+  }
+  await fs.mkdir(path.dirname(out), { recursive: true });
+  await fs.cp(knowledgeDir, out, { recursive: true, force: false, errorOnExist: true });
+  const files = await listFilesRecursive(out);
+  const result = {
+    ok: true,
+    kind: "backup",
+    source: knowledgeDir,
+    output: out,
+    files: files.length,
+    createdAt: new Date().toISOString(),
+  };
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    return;
+  }
+  process.stdout.write(`Backed up Memlane knowledge to ${out}\n`);
+  process.stdout.write(`${files.length} file(s) copied.\n`);
+}
+
+async function runExport(args: string[]): Promise<void> {
+  const opts = parseExportOptions(args);
+  const knowledgeDir = resolveCliKnowledgeDir(opts.dir);
+  if (!(await pathExists(knowledgeDir))) {
+    throw new Error(`Knowledge directory does not exist: ${knowledgeDir}`);
+  }
+  const store = new KnowledgeStore(knowledgeDir);
+  const graph = await store.readGraph();
+  const vectorIndex = new VectorIndex(path.join(knowledgeDir, "_vectors.json"));
+  const result = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    knowledgeDir,
+    entities: graph.entities.map((e) => project(e, knowledgeDir)),
+    relations: graph.relations,
+    vectorIndex: await vectorIndex.status(),
+  };
+  const text = JSON.stringify(result, null, 2) + "\n";
+  if (opts.out) {
+    const out = path.resolve(process.cwd(), opts.out);
+    await fs.mkdir(path.dirname(out), { recursive: true });
+    await fs.writeFile(out, text);
+    if (opts.json) {
+      process.stdout.write(
+        JSON.stringify(
+          {
+            ok: true,
+            output: out,
+            entities: graph.entities.length,
+            relations: graph.relations.length,
+          },
+          null,
+          2
+        ) + "\n"
+      );
+      return;
+    }
+    process.stdout.write(`Exported Memlane graph to ${out}\n`);
+    process.stdout.write(`${graph.entities.length} entities, ${graph.relations.length} relations.\n`);
+    return;
+  }
+  process.stdout.write(text);
 }
 
 async function main() {
@@ -2017,6 +3198,26 @@ async function runCli() {
   }
   if (cmd === "init") {
     await runInit([subcmd, ...rest].filter(Boolean));
+    return;
+  }
+  if (cmd === "bye") {
+    await runBye([subcmd, ...rest].filter(Boolean));
+    return;
+  }
+  if (cmd === "status") {
+    await runStatus([subcmd, ...rest].filter(Boolean));
+    return;
+  }
+  if (cmd === "doctor") {
+    await runDoctorCli([subcmd, ...rest].filter(Boolean));
+    return;
+  }
+  if (cmd === "backup") {
+    await runBackup([subcmd, ...rest].filter(Boolean));
+    return;
+  }
+  if (cmd === "export") {
+    await runExport([subcmd, ...rest].filter(Boolean));
     return;
   }
   if (cmd === "--help" || cmd === "-h" || cmd === "help") {
