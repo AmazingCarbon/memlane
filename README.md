@@ -13,7 +13,7 @@ outside the worktree you want to initialize:
 
 ```sh
 mkdir -p ~/tools
-git clone https://github.com/c4rb0nx1/memlane.git ~/tools/memlane
+git clone https://github.com/AmazingCarbon/memlane.git ~/tools/memlane
 cd ~/tools/memlane
 npm install
 npm run build
